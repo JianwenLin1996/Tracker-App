@@ -1,6 +1,7 @@
 import 'dart:async';
+import './auth.dart';
+import './auth_provider.dart';
 import 'package:flutter/widgets.dart';
-
 import 'package:flutter/material.dart';
 import 'package:geolocation/geolocation.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -10,13 +11,21 @@ import 'package:connectivity/connectivity.dart';
 class KeepTrack extends StatefulWidget {
   //to get String argument for this class
   final String id;
-  KeepTrack(this.id);
+  final Function(String uid) onSignedOut;
+  const KeepTrack({this.onSignedOut, this.id});
 
   @override
   _KeepTrackState createState() => _KeepTrackState();
 }
 
 class _KeepTrackState extends State<KeepTrack> {
+  Map<String, dynamic> _userInfo = {
+    "new_username": "",
+    "new_matricnumber": "",
+    "new_contactnumber": "",
+    "new_school": "",
+  };
+
   double lat = 0;
   double long = 0;
   List<String> locationstored = [];
@@ -42,7 +51,6 @@ class _KeepTrackState extends State<KeepTrack> {
   @override
   initState() {
     super.initState();
-
     //check internet connection
     _gotinternet.add(false);
     subscription = Connectivity()
@@ -62,17 +70,22 @@ class _KeepTrackState extends State<KeepTrack> {
 
         //if internet is connected, update time
         _updateTime();
-        //if internet is connected, check if ID folder is existed on Firestore
-        checkExistance();
+        //if internet is connected, check if ID folder has existed on Firestore
+        //ERROR if use "value" after then, get "new_matricnumber" directly in checkExistance, NOT pass in "value"
+        //thus, getUserInfo need not return anything also
+        getUserInfo().then((value) => checkExistance()).catchError((e) {
+          print("Error : " + e);
+        });
+        getPermission();
       }
     });
 
     //set _events as new StreamController<List<String>> to detect update of tracking data
     _events = new StreamController<List<String>>.broadcast();
-    _events.add(["Start tracking"]);
+    _events.add(["Start tracking"]) ;
 
-    //code inside will run every 10 seconds in this page
-    _timer = Timer.periodic(Duration(seconds: 10), (Timer t) {
+    //code inside will run every 30 seconds in this page
+    _timer = Timer.periodic(Duration(seconds: 30), (Timer t) {
       //run code if is connected
       if (_connected) {
         _updateTime();
@@ -89,7 +102,7 @@ class _KeepTrackState extends State<KeepTrack> {
     _gotinternet.close(); //Stream MUST be closed when exiting page.
     _timer
         .cancel(); //MUST cancel timer before exiting, else it will still continue in other page and cause error
-    subscription.cancel();     
+    subscription.cancel();
     super.dispose();
   }
 
@@ -100,7 +113,7 @@ class _KeepTrackState extends State<KeepTrack> {
     //get offset time from Network Time Protocol
     //offsettime meaning time difference between local machine and reference time (NTP)
     NTP.getNtpOffset().then((value) {
-      //print("time updated");      
+      //print("time updated");
       setState(() {
         _ntpOffset = value;
         //set _ntpTime to current time plus offset time
@@ -128,7 +141,7 @@ class _KeepTrackState extends State<KeepTrack> {
     //process the id list to fit it into field
     idlist = idlist.substring(1, idlist.length - 1);
     List<String> tempidlist = idlist.split(", ");
-    tempidlist.add(widget.id);
+    tempidlist.add(_userInfo["new_matricnumber"]);
     Map<String, dynamic> addin = {"UserID List": tempidlist};
     //add data into IDCollection document
     await Firestore.instance.document('UserID/IDCollection/').updateData(addin);
@@ -139,7 +152,8 @@ class _KeepTrackState extends State<KeepTrack> {
     };
     final CollectionReference newcollection = Firestore.instance.collection(
         'UserID/IDCollection/' +
-            widget.id); //collection need not "/" after widget.id
+            _userInfo[
+                "new_matricnumber"]); //collection need not "/" after widget.id or _userInfo["new_matricnumber"]
     //set first login time as field into the newly created folder
     await newcollection.document(today).setData(newinfo);
   }
@@ -155,9 +169,27 @@ class _KeepTrackState extends State<KeepTrack> {
         if (datasnapshot.exists) {
           Map<String, dynamic> tempString = datasnapshot.data;
           String tempID = tempString['UserID List'].toString();
-          if (!tempID.contains(widget.id)) { //if no data inside IDCollection matches entered ID
+          print("stage 1");
+          if (!tempID.contains(_userInfo["new_matricnumber"])) {
+            print(
+                "stage 2"); //if no data inside IDCollection matches entered ID
             createCollection(tempID);
           }
+        }
+      });
+    } catch (err) {
+      print(err);
+    }
+  }
+
+  Future<void> getUserInfo() async {
+    try {
+      Firestore.instance
+          .document('RegisteredUser/' + widget.id)
+          .get() //get data inside IDCollection
+          .then((datasnapshot) {
+        if (datasnapshot.exists) {
+          _userInfo = datasnapshot.data;
         }
       });
     } catch (err) {
@@ -176,35 +208,37 @@ class _KeepTrackState extends State<KeepTrack> {
     try {
       Firestore.instance
           .document("UserID/IDCollection/" +
-              widget.id +
+              _userInfo["new_matricnumber"] +
               "/" +
               today.toString() +
               "/")
           .get()
           .then((datasnapshot) {
-        if (!datasnapshot.exists) { //if not exist
+        if (!datasnapshot.exists) {
+          //if not exist
           Firestore.instance
               .document("UserID/IDCollection/" +
-                  widget.id +
+                  _userInfo["new_matricnumber"] +
                   "/" +
                   today.toString() +
                   "/")
               .setData(tempdata); //create new document and set data
-        }
-        else {
+        } else {
           Firestore.instance
-        .document(
-            "UserID/IDCollection/" + widget.id + "/" + today.toString() + "/")
-        .updateData(
-            tempdata); //update data
-            //did not create document using updateData
+              .document("UserID/IDCollection/" +
+                  _userInfo["new_matricnumber"] +
+                  "/" +
+                  today.toString() +
+                  "/")
+              .updateData(tempdata); //update data
+          //did not create document using updateData
         }
       });
     } catch (err) {
       print(err);
     }
 
-     //if the key of map is unique in the document, document will be added instead of replaced
+    //if the key of map is unique in the document, document will be added instead of replaced
   }
 
   //get permission to detect device location
@@ -219,12 +253,14 @@ class _KeepTrackState extends State<KeepTrack> {
   //get location of device
   getLocation() async {
     getPermission().then((result) {
-      if (result.isSuccessful) { //if permission to detect location is granted
+      if (result.isSuccessful) {
+        //if permission to detect location is granted
         StreamSubscription<LocationResult> subscription =
             Geolocation.currentLocation(
                     inBackground: true, accuracy: LocationAccuracy.best)
-                .listen((result) { 
-          if (result.isSuccessful) { //if successfully obtain result
+                .listen((result) {
+          if (result.isSuccessful) {
+            //if successfully obtain result
             if (mounted) {
               //mounted is needed so that if this is still running after page exited
               //no error will occur  due to setState
@@ -267,39 +303,172 @@ class _KeepTrackState extends State<KeepTrack> {
     });
   }
 
+  Future<void> _signOut(BuildContext context) async {
+    try {
+      final BaseAuth auth = AuthProvider.of(context).auth;
+      await auth.signOut();
+      widget.onSignedOut(widget.id);
+    } catch (e) {
+      print(e);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-        appBar: new AppBar(
-          title: new Text("ID : " + widget.id),
+        appBar: AppBar(
+          backgroundColor: Colors.purple,
+          elevation: 5.0,
+          title: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: <Widget>[
+              Text(
+                "USM Tracker App",
+                textAlign: TextAlign.center,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+          ),
+          leading:  Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: GestureDetector(
+                child: Icon(Icons.refresh, color: Colors.purple),
+                onTap: () {                
+                },
+              ),
+            ),
+          actions: <Widget>[
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: GestureDetector(
+                child: Icon(Icons.refresh, color: Colors.white),
+                onTap: () {
+                  setState(() {                 
+                  });
+                },
+              ),
+            )
+          ],
         ),
         body: StreamBuilder(
             stream: _gotinternet.stream, //listen to _gotinternet stream
             builder: (BuildContext context, connection) {
               return (connection.data == true)
-                  ? new Container( //UI when connected to internet
-                      child: new Center(
-                        child: StreamBuilder( 
-                          stream: _events.stream, //listen to _events stream
-                          builder: (context, snapshot) {
-                            //locationresult = snapshot.data;
-                            return ListView.builder( //build a list of items
-                              padding: EdgeInsets.symmetric(horizontal: 8),
-                              itemCount: locationstored.length,
-                              itemBuilder: (context, index) {
-                                return ListTile(
-                                  subtitle: Text(timestored.elementAt(index)),
-                                  title: Text(locationstored.elementAt(index)),
-                                );
-                              },
-                            );
-                          },
-                        ),                  
+                  ? SingleChildScrollView(
+                                      child: new Container(
+                        //UI when connected to internet
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: <Widget>[
+                            Padding(
+                              padding: EdgeInsets.all(8.0),
+                              child: Container(
+                                decoration: BoxDecoration(
+                                    border: Border.all(
+                                        width: 3.0, color: Colors.purple),
+                                    borderRadius:
+                                        BorderRadius.all(Radius.circular(5.0))),
+                                height: MediaQuery.of(context).size.height * 0.15,
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                                  children: <Widget>[
+                                    Padding(
+                                      padding: const EdgeInsets.fromLTRB(
+                                          8.0, 0, 8.0, 0),
+                                      child: Container(
+                                        width: MediaQuery.of(context).size.width*0.25,
+                                        child: Text(
+                                          "Press to stop\ntracking and\nsign out.",
+                                          softWrap: true,
+                                          textAlign: TextAlign.justify,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                              color: Colors.purple,
+                                              fontWeight: FontWeight.w600,
+                                              fontSize: 15),
+                                        ),
+                                      ),
+                                    ),
+                                    Padding(
+                                      padding:
+                                          const EdgeInsets.fromLTRB(5, 0, 5, 0),
+                                      child: GestureDetector(
+                                        child: CircleAvatar(
+                                          backgroundColor: Colors.purple,
+                                          child: Icon(Icons.stop, color: Colors.white,)),
+                                        onTap: () => _signOut(context),
+                                      ),
+                                    ),
+                                    Padding(
+                                      padding: const EdgeInsets.fromLTRB(
+                                          5,0,10,0),
+                                      child: SizedBox(
+                                        height:
+                                            MediaQuery.of(context).size.height *
+                                                0.1,
+                                        width: 3,
+                                        child: Container(color: Colors.purple),
+                                      ),
+                                    ),
+                                    Column(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.spaceEvenly,
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: <Widget>[
+                                          Padding(
+                                            padding: const EdgeInsets.fromLTRB(0, 0, 8.0, 0),
+                                            child: Container(
+                                              width: MediaQuery.of(context).size.width*0.4,
+                                              child: SingleChildScrollView(
+                                                scrollDirection: Axis.horizontal,
+                                                child: _info(_userInfo["new_username"])),
+                                            ),
+                                          ),
+                                          _info(_userInfo["new_contactnumber"]),
+                                          _info(_userInfo["new_matricnumber"]),
+                                        ]),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            Container(
+                              height: MediaQuery.of(context).size.height * 0.7,
+                              child: StreamBuilder(
+                                stream: _events.stream, //listen to _events stream
+                                builder: (context, snapshot) {
+                                  //locationresult = snapshot.data;
+                                  return ListView.builder(
+                                    //build a list of items
+                                    padding: EdgeInsets.symmetric(horizontal: 8),
+                                    itemCount: locationstored.length,
+                                    itemBuilder: (context, index) {
+                                      return ListTile(
+                                        subtitle:
+                                            Text(timestored.elementAt(index)),
+                                        title:
+                                            Text(locationstored.elementAt(index)),
+                                      );
+                                    },
+                                  );
+                                },
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                    )
+                  )
                   : _nointernet();
             }));
   }
+}
+
+Widget _info(String k) {
+  return Text(
+    k,
+    overflow: TextOverflow.ellipsis,
+    style: TextStyle(fontSize: 15.0, color: Colors.purple),
+  );
 }
 
 //UI when no internet
